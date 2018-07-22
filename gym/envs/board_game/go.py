@@ -205,6 +205,51 @@ class GoEnv(gym.Env):
         return outfile
 
     def _step(self, action):
+        try:
+            prev_state = self._step_solo(action)
+        except pachi_py.IllegalMove:
+            if self.illegal_move_mode == 'raise':
+                six.reraise(*sys.exc_info())
+            elif self.illegal_move_mode == 'lose':
+                # Automatic loss on illegal move
+                self.done = True
+                return self.state.board.encode(), -1., True, {'state': self.state}
+            else:
+                raise error.Error('Unsupported illegal move action: {}'.format(self.illegal_move_mode))
+
+        if not self.state.board.is_terminal:
+            if self.opponent != 'human':
+                opponent_resigned = self._step_opponent(prev_state, action)
+                if opponent_resigned:
+                    self.done = True
+                    return self.state.board.encode(), 1., True, {'state': self.state}
+            else:
+                self.player_color = pachi_py.BLACK if self.player_color == pachi_py.WHITE else pachi_py.WHITE
+
+
+        # Reward: if nonterminal, then the reward is 0
+        if not self.state.board.is_terminal:
+            self.done = False
+            return self.state.board.encode(), 0., False, {'state': self.state}
+
+        # We're in a terminal state. Reward is 1 if won, -1 if lost
+        assert self.state.board.is_terminal
+        self.done = True
+        white_wins = self.state.board.official_score > 0
+        black_wins = self.state.board.official_score < 0
+        player_wins = (white_wins and self.player_color == pachi_py.WHITE) or (
+                black_wins and self.player_color == pachi_py.BLACK)
+        reward = 1. if player_wins else -1. if (white_wins or black_wins) else 0.
+        return self.state.board.encode(), reward, True, {'state': self.state}
+
+
+    def _step_opponent(self, prev_state, action):
+        # Opponent play
+        self.state, opponent_resigned = self._exec_opponent_play(self.state, prev_state, action)
+        # After opponent play, we should be back to the original color
+        assert self.state.color == self.player_color
+
+    def _step_solo(self, action):
         assert self.state.color == self.player_color
 
         # If already terminal, then don't do anything
@@ -218,42 +263,8 @@ class GoEnv(gym.Env):
 
         # Play
         prev_state = self.state
-        try:
-            self.state = self.state.act(action)
-        except pachi_py.IllegalMove:
-            if self.illegal_move_mode == 'raise':
-                six.reraise(*sys.exc_info())
-            elif self.illegal_move_mode == 'lose':
-                # Automatic loss on illegal move
-                self.done = True
-                return self.state.board.encode(), -1., True, {'state': self.state}
-            else:
-                raise error.Error('Unsupported illegal move action: {}'.format(self.illegal_move_mode))
-
-        # Opponent play
-        if not self.state.board.is_terminal:
-            self.state, opponent_resigned = self._exec_opponent_play(self.state, prev_state, action)
-            # After opponent play, we should be back to the original color
-            assert self.state.color == self.player_color
-
-            # If the opponent resigns, then the agent wins
-            if opponent_resigned:
-                self.done = True
-                return self.state.board.encode(), 1., True, {'state': self.state}
-
-        # Reward: if nonterminal, then the reward is 0
-        if not self.state.board.is_terminal:
-            self.done = False
-            return self.state.board.encode(), 0., False, {'state': self.state}
-
-        # We're in a terminal state. Reward is 1 if won, -1 if lost
-        assert self.state.board.is_terminal
-        self.done = True
-        white_wins = self.state.board.official_score > 0
-        black_wins = self.state.board.official_score < 0
-        player_wins = (white_wins and self.player_color == pachi_py.WHITE) or (black_wins and self.player_color == pachi_py.BLACK)
-        reward = 1. if player_wins else -1. if (white_wins or black_wins) else 0.
-        return self.state.board.encode(), reward, True, {'state': self.state}
+        self.state = self.state.act(action)
+        return prev_state
 
     def _exec_opponent_play(self, curr_state, prev_state, prev_action):
         assert curr_state.color != self.player_color
@@ -270,5 +281,7 @@ class GoEnv(gym.Env):
             self.opponent_policy = make_random_policy(self.np_random)
         elif self.opponent == 'pachi:uct:_2400':
             self.opponent_policy = make_pachi_policy(board=board, engine_type=six.b('uct'), pachi_timestr=six.b('_2400')) # TODO: strength as argument
+        elif self.opponent == 'human':
+            self.opponent_policy = None
         else:
             raise error.Error('Unrecognized opponent policy {}'.format(self.opponent))
