@@ -114,7 +114,6 @@ class EnvRegistry(object):
         self.env_specs = {}
 
     def make(self, id):
-        logger.info('Making new env: %s', id)
         spec = self.spec(id)
         env = spec.make()
         if (env.spec.timestep_limit is not None) and not spec.tags.get('vnc'):
